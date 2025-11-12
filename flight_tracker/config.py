@@ -18,6 +18,9 @@ class Route:
     destination: str
 
 
+DEFAULT_DATA_DIR = Path(".data")
+
+
 @dataclass(frozen=True)
 class AppConfig:
     """Holds runtime configuration loaded from the environment."""
@@ -32,6 +35,8 @@ class AppConfig:
     adults: int
     children: int
     travel_classes: List[str]
+    data_dir: Path
+    storage_backends: List[str]
 
 
 def parse_environment(value: str | None) -> str:
@@ -82,6 +87,22 @@ def parse_travel_classes(value: str | None) -> List[str]:
     return deduped
 
 
+def parse_storage_backends(value: str | None) -> List[str]:
+    if not value:
+        return ["json"]
+
+    backends = [entry.strip().lower() for entry in value.split(",") if entry.strip()]
+    if not backends:
+        raise ValueError("STORAGE_BACKENDS must list at least one backend name (e.g. 'json')")
+    return backends
+
+
+def parse_data_dir(value: str | None) -> Path:
+    if not value:
+        return DEFAULT_DATA_DIR
+    return Path(value).expanduser()
+
+
 def _load_env_file(env_path: str | os.PathLike[str] | None) -> None:
     if env_path is None:
         load_dotenv()
@@ -116,4 +137,6 @@ def load_config(env_path: str | os.PathLike[str] | None = None) -> AppConfig:
         adults=int(os.getenv("ADULTS", "1")),
         children=int(os.getenv("CHILDREN", "0")),
         travel_classes=parse_travel_classes(os.getenv("TRAVEL_CLASSES")),
+        data_dir=parse_data_dir(os.getenv("DATA_DIR")),
+        storage_backends=parse_storage_backends(os.getenv("STORAGE_BACKENDS")),
     )

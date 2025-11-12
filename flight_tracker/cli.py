@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterable, List, Sequence
+from uuid import uuid4
 
 from .amadeus_client import AmadeusFlightClient, FlightOption, FlightSegment
 from .config import (
@@ -18,6 +20,7 @@ from .config import (
     parse_routes,
     parse_travel_classes,
 )
+from .storage import RunContext, StorageError, build_storage_backends
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -67,6 +70,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override the ISO currency code used for pricing (e.g. PHP, USD)",
     )
     parser.add_argument(
+        "--data-dir",
+        dest="data_dir",
+        help="Directory where storage backends should write artifacts (default .data)",
+    )
+    parser.add_argument(
+        "--storage-backends",
+        dest="storage_backends",
+        help="Comma separated list of storage backends to use (default json)",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Print verbose diagnostics about config and Amadeus requests",
@@ -94,6 +107,12 @@ def _merge_config(args: argparse.Namespace, config: AppConfig) -> AppConfig:
         else config.environment
     )
     currency = parse_currency(args.currency) if args.currency else config.currency
+    data_dir = Path(args.data_dir).expanduser() if args.data_dir else config.data_dir
+    storage_backends = (
+        [entry.strip().lower() for entry in args.storage_backends.split(",") if entry.strip()]
+        if args.storage_backends
+        else config.storage_backends
+    )
 
     return AppConfig(
         client_id=config.client_id,
@@ -106,6 +125,8 @@ def _merge_config(args: argparse.Namespace, config: AppConfig) -> AppConfig:
         adults=args.adults if args.adults is not None else config.adults,
         children=args.children if args.children is not None else config.children,
         travel_classes=travel_classes,
+        data_dir=data_dir,
+        storage_backends=storage_backends,
     )
 
 
@@ -123,7 +144,7 @@ def _print_debug_config(config: AppConfig) -> None:
     print(
         (
             "DEBUG: config -> client_id=%s client_secret=%s env=%s currency=%s departure=%s return=%s "
-            "adults=%s children=%s routes=[%s] travel_classes=[%s]"
+            "adults=%s children=%s routes=[%s] travel_classes=[%s] data_dir=%s storage_backends=%s"
         )
         % (
             _mask_secret(config.client_id),
@@ -136,6 +157,8 @@ def _print_debug_config(config: AppConfig) -> None:
             config.children,
             routes,
             travel_classes,
+            str(config.data_dir),
+            ",".join(config.storage_backends),
         ),
         file=sys.stderr,
     )
@@ -324,6 +347,40 @@ def run(argv: Sequence[str] | None = None) -> int:
         return 0
 
     offers.sort(key=lambda offer: offer.price)
+
+    run_context = RunContext(
+        run_id=uuid4().hex,
+        timestamp=datetime.now(timezone.utc),
+        environment=merged_config.environment,
+        currency=merged_config.currency,
+        departure_date=merged_config.departure_date,
+        return_date=merged_config.return_date,
+        routes=[f"{route.origin}-{route.destination}" for route in merged_config.routes],
+        travel_classes=merged_config.travel_classes,
+        adults=merged_config.adults,
+        children=merged_config.children,
+        max_results=args.max_results,
+    )
+
+    try:
+        storage_backends = build_storage_backends(
+            merged_config.storage_backends,
+            merged_config.data_dir,
+        )
+    except StorageError as exc:
+        parser.error(str(exc))
+
+    for backend in storage_backends:
+        try:
+            artifact = backend.persist(run_context, offers)
+            if debug_enabled:
+                print(
+                    f"DEBUG: storage backend {backend.name} wrote {artifact}",
+                    file=sys.stderr,
+                )
+        except StorageError as exc:
+            print(f"Storage backend '{backend.name}' failed: {exc}", file=sys.stderr)
+
     for row in offers:
         print(_format_offer(row))
 
