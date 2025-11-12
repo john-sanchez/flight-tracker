@@ -52,6 +52,8 @@ Useful overrides:
   travel window.
 - `--amadeus-env test` to explicitly hit the sandbox regardless of `.env`.
 - `--currency PHP` to request results priced in another currency.
+- `--debug` to print the resolved config plus all Amadeus request parameters and
+  response counts (useful when diagnosing 401s or other API errors).
 
 Each offer is rendered as a block with the first flight number/aircraft on the
 summary line and, when connections exist, indented layover details showing the

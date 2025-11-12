@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable, List
+import sys
 
 from amadeus import Client, ResponseError
 
@@ -38,15 +39,52 @@ class FlightOption:
     segments: List[FlightSegment]
 
 
+def _mask_secret(value: str | None) -> str:
+    if not value:
+        return "n/a"
+    if len(value) <= 4:
+        return "*" * len(value)
+    return f"{value[:2]}{'*' * (len(value) - 4)}{value[-2:]}"
+
+
+def _extract_client_debug_info(client: Client) -> dict[str, str | None]:
+    http_client = getattr(client, "http", None)
+    return {
+        "client_id": _mask_secret(getattr(client, "client_id", None)),
+        "client_secret": _mask_secret(getattr(client, "client_secret", None)),
+        "hostname": getattr(client, "hostname", None),
+        "host": getattr(client, "host", None),
+        "environment": getattr(client, "environment", None),
+        "http_host": getattr(http_client, "host", None) if http_client else None,
+        "token_url": getattr(http_client, "token_url", None) if http_client else None,
+    }
+
+
 class AmadeusFlightClient:
     """Encapsulates queries to the Amadeus Flight Offers Search API."""
 
-    def __init__(self, client_id: str, client_secret: str, environment: str) -> None:
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        environment: str,
+        *,
+        debug: bool = False,
+    ) -> None:
         self._client = Client(
             client_id=client_id,
             client_secret=client_secret,
             hostname=environment,
         )
+        self._debug = debug
+
+        if debug:
+            info = _extract_client_debug_info(self._client)
+            print(
+                "DEBUG: Amadeus SDK client created -> %s"
+                % ", ".join(f"{key}={value}" for key, value in info.items()),
+                file=sys.stderr,
+            )
 
     def fetch_offers(
         self,
@@ -59,7 +97,9 @@ class AmadeusFlightClient:
         children: int,
         currency: str,
         max_results: int = 50,
+        debug: bool | None = None,
     ) -> List[FlightOption]:
+        effective_debug = self._debug if debug is None else debug
         params = {
             "originLocationCode": route.origin,
             "destinationLocationCode": route.destination,
@@ -75,10 +115,24 @@ class AmadeusFlightClient:
         if return_date:
             params["returnDate"] = return_date
 
+        if effective_debug:
+            print(
+                "DEBUG: Amadeus request -> route=%s-%s class=%s params=%s"
+                % (route.origin, route.destination, travel_class, params),
+                file=sys.stderr,
+            )
+
         try:
             response = self._client.shopping.flight_offers_search.get(**params)
         except ResponseError as exc:  # pragma: no cover - network exception path
-            raise RuntimeError(f"Amadeus API error: {exc}") from exc
+            response = getattr(exc, "response", None)
+            status = getattr(response, "status_code", "unknown") if response else "unknown"
+            body = None
+            if response is not None:
+                body = getattr(response, "body", None) or getattr(response, "result", None)
+            raise RuntimeError(
+                f"Amadeus API error: {exc} (status={status}, payload={body})"
+            ) from exc
 
         offers = []
         for offer in response.data:
@@ -125,6 +179,13 @@ class AmadeusFlightClient:
                     stops=stops,
                     segments=segments,
                 )
+            )
+
+        if effective_debug:
+            print(
+                "DEBUG: Amadeus response -> route=%s-%s class=%s offers=%d"
+                % (route.origin, route.destination, travel_class, len(offers)),
+                file=sys.stderr,
             )
 
         return offers

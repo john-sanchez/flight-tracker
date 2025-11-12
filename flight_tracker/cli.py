@@ -67,6 +67,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override the ISO currency code used for pricing (e.g. PHP, USD)",
     )
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print verbose diagnostics about config and Amadeus requests",
+    )
+    parser.add_argument(
         "--max-results",
         dest="max_results",
         type=int,
@@ -101,6 +106,38 @@ def _merge_config(args: argparse.Namespace, config: AppConfig) -> AppConfig:
         adults=args.adults if args.adults is not None else config.adults,
         children=args.children if args.children is not None else config.children,
         travel_classes=travel_classes,
+    )
+
+
+def _mask_secret(value: str | None) -> str:
+    if not value:
+        return "n/a"
+    if len(value) <= 4:
+        return "*" * len(value)
+    return f"{value[:2]}{'*' * (len(value) - 4)}{value[-2:]}"
+
+
+def _print_debug_config(config: AppConfig) -> None:
+    routes = ", ".join(f"{route.origin}-{route.destination}" for route in config.routes)
+    travel_classes = ", ".join(config.travel_classes)
+    print(
+        (
+            "DEBUG: config -> client_id=%s client_secret=%s env=%s currency=%s departure=%s return=%s "
+            "adults=%s children=%s routes=[%s] travel_classes=[%s]"
+        )
+        % (
+            _mask_secret(config.client_id),
+            _mask_secret(config.client_secret),
+            config.environment,
+            config.currency,
+            config.departure_date,
+            config.return_date or "n/a",
+            config.adults,
+            config.children,
+            routes,
+            travel_classes,
+        ),
+        file=sys.stderr,
     )
 
 
@@ -251,10 +288,15 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     merged_config = _merge_config(args, config)
 
+    debug_enabled = args.debug
+    if debug_enabled:
+        _print_debug_config(merged_config)
+
     client = AmadeusFlightClient(
         client_id=merged_config.client_id,
         client_secret=merged_config.client_secret,
         environment=merged_config.environment,
+        debug=debug_enabled,
     )
 
     offers: List[FlightOption] = []
@@ -270,6 +312,7 @@ def run(argv: Sequence[str] | None = None) -> int:
                         adults=merged_config.adults,
                         children=merged_config.children,
                         currency=merged_config.currency,
+                        debug=debug_enabled,
                         max_results=args.max_results,
                     )
                 )
