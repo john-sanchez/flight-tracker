@@ -1,0 +1,10 @@
+✈️ Flight tracker update
+Routes: {routes}
+Classes: {travel_classes}
+Departure: {departure_date} (return: {return_date})
+
+Top offers:
+{offers_summary}
+
+Cheapest per route/class/stop:
+{permutation_summary}

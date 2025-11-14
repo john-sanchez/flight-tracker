@@ -37,6 +37,7 @@ class AppConfig:
     travel_classes: List[str]
     data_dir: Path
     storage_backends: List[str]
+    notification_channels: List[str]
 
 
 def parse_environment(value: str | None) -> str:
@@ -103,6 +104,13 @@ def parse_data_dir(value: str | None) -> Path:
     return Path(value).expanduser()
 
 
+def parse_notification_channels(value: str | None) -> List[str]:
+    if not value:
+        return []
+    channels = [entry.strip().lower() for entry in value.split(",") if entry.strip()]
+    return channels
+
+
 def _load_env_file(env_path: str | os.PathLike[str] | None) -> None:
     if env_path is None:
         load_dotenv()
@@ -139,4 +147,5 @@ def load_config(env_path: str | os.PathLike[str] | None = None) -> AppConfig:
         travel_classes=parse_travel_classes(os.getenv("TRAVEL_CLASSES")),
         data_dir=parse_data_dir(os.getenv("DATA_DIR")),
         storage_backends=parse_storage_backends(os.getenv("STORAGE_BACKENDS")),
+        notification_channels=parse_notification_channels(os.getenv("NOTIFICATION_CHANNELS")),
     )

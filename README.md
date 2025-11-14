@@ -68,6 +68,40 @@ successful run the tool also writes the raw JSON payload (routes + offers) under
 `.data/<YYYY-MM-DD>/flight-offers-<run_id>.json`, which makes it easy to store
 daily snapshots or plug in future storage backends.
 
+## Docker
+
+Build the container image directly from the repository root:
+
+```bash
+docker build -t flight-tracker .
+```
+
+All configuration is provided through environment variables, so you can reuse an
+existing `.env` file or pass values inline:
+
+```bash
+# using the .env file already in the repo
+docker run --rm --env-file .env flight-tracker --debug
+
+# or injecting the critical variables manually
+docker run --rm \
+  -e AMADEUS_CLIENT_ID=... \
+  -e AMADEUS_CLIENT_SECRET=... \
+  -e ROUTES=MNL-TYO,MNL-KIX \
+  -e DEPARTURE_DATE=2024-08-01 \
+  flight-tracker
+```
+
+Results are still written to the configured `DATA_DIR` (default `.data`). Mount
+that directory to keep artifacts on the host:
+
+```bash
+docker run --rm \
+  --env-file .env \
+  -v "$(pwd)/.data:/app/.data" \
+  flight-tracker
+```
+
 ## Storage backends
 
 Flight data can be persisted through pluggable backends. The default backend is
@@ -106,3 +140,89 @@ the CLI can surface clear diagnostics without aborting the entire run.
 All arguments fall back to the `.env` values, so only the credentials and base
 search criteria need to be specified once. Any Amadeus API errors are surfaced
 per route so you can quickly identify configuration issues.
+
+## Notifications
+
+Flight results can also be pushed to one or more notification channels by
+configuring `NOTIFICATION_CHANNELS` (e.g. `email`, `telegram`, or both). Each
+message includes a “cheapest per route/class/stop” breakdown sorted by price
+and annotated with the leading flight number for easier triage.
+
+### Email
+
+Set the following variables (or their prefixed equivalents when using multiple
+SMTP profiles) so the built-in email notifier can compose the default template
+stored in `flight_tracker/notifications/templates/email_body.txt`:
+
+```
+NOTIFICATION_CHANNELS=email
+EMAIL_HOST=smtp.example.com
+EMAIL_PORT=587
+EMAIL_USERNAME=username
+EMAIL_PASSWORD=secret
+EMAIL_FROM=alerts@example.com
+EMAIL_TO=you@example.com,team@example.com
+EMAIL_SUBJECT_PREFIX=[Flight Tracker]
+```
+
+Sample email body:
+
+```
+Flight Tracker Run Summary
+
+Environment : production
+Routes      : MNL-KIX, MNL-TYO
+Classes     : economy, business
+Party       : 2 adult(s), 0 child(ren)
+Departure   : 2024-08-01
+Return      : n/a
+Currency    : USD
+
+Top offers:
+1. USD 520.10 | Economy  | MNL->TYO | dep 2024-08-01 09:25
+2. USD 710.55 | Business | MNL->KIX | dep 2024-08-02 06:10
+
+Cheapest per route/class/stop:
+- MNL->TYO | economy | non-stop | flight JL746 -> USD 520.10
+- MNL->KIX | business | 1 stop | flight NH820 -> USD 710.55
+
+Artifacts are stored via configured backends at 2024-06-01 12:00:00 UTC (run 9af...)
+```
+
+### Telegram bot
+
+Provide a bot token plus one or more chat IDs (group chats use negative IDs) and
+enable the channel. The default message template lives in
+`flight_tracker/notifications/templates/telegram_message.txt`.
+
+```
+NOTIFICATION_CHANNELS=telegram
+TELEGRAM_BOT_TOKEN=1234567890:bot-token
+TELEGRAM_CHAT_IDS=-1001234567890,987654321
+```
+
+Example Telegram message:
+
+```
+✈️ Flight tracker update
+Routes: MNL-KIX, MNL-TYO
+Classes: economy, business
+Departure: 2024-08-01 (return: n/a)
+
+Top offers:
+1. USD 520.10 | Economy  | MNL->TYO | dep 2024-08-01 09:25
+2. USD 710.55 | Business | MNL->KIX | dep 2024-08-02 06:10
+
+Cheapest per route/class/stop:
+- MNL->TYO | economy | non-stop | flight JL746 -> USD 520.10
+- MNL->KIX | business | 1 stop | flight NH820 -> USD 710.55
+```
+
+### Custom channels
+
+To add new channels, implement `NotificationChannel` inside
+`flight_tracker/notifications/__init__.py` and register it within
+`build_notification_channels`. Follow the email/telegram samples for guidance on
+validating configuration, rendering templates (edit or replace the files under
+`flight_tracker/notifications/templates`), and raising `NotificationError` when
+delivery fails.

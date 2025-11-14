@@ -17,9 +17,11 @@ from .config import (
     load_config,
     parse_currency,
     parse_environment,
+    parse_notification_channels,
     parse_routes,
     parse_travel_classes,
 )
+from .notifications import NotificationError, build_notification_channels
 from .storage import RunContext, StorageError, build_storage_backends
 
 
@@ -80,6 +82,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Comma separated list of storage backends to use (default json)",
     )
     parser.add_argument(
+        "--notification-channels",
+        dest="notification_channels",
+        help="Comma separated list of notification channels to use (e.g. email,telegram)",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Print verbose diagnostics about config and Amadeus requests",
@@ -113,6 +120,11 @@ def _merge_config(args: argparse.Namespace, config: AppConfig) -> AppConfig:
         if args.storage_backends
         else config.storage_backends
     )
+    notification_channels = (
+        parse_notification_channels(args.notification_channels)
+        if args.notification_channels
+        else config.notification_channels
+    )
 
     return AppConfig(
         client_id=config.client_id,
@@ -127,6 +139,7 @@ def _merge_config(args: argparse.Namespace, config: AppConfig) -> AppConfig:
         travel_classes=travel_classes,
         data_dir=data_dir,
         storage_backends=storage_backends,
+        notification_channels=notification_channels,
     )
 
 
@@ -380,6 +393,19 @@ def run(argv: Sequence[str] | None = None) -> int:
                 )
         except StorageError as exc:
             print(f"Storage backend '{backend.name}' failed: {exc}", file=sys.stderr)
+
+    try:
+        notification_channels = build_notification_channels(merged_config.notification_channels)
+    except NotificationError as exc:
+        parser.error(str(exc))
+
+    for channel in notification_channels:
+        try:
+            channel.send(run_context, offers)
+            if debug_enabled:
+                print(f"DEBUG: notification channel {channel.name} sent alert", file=sys.stderr)
+        except NotificationError as exc:
+            print(f"Notification channel '{channel.name}' failed: {exc}", file=sys.stderr)
 
     for row in offers:
         print(_format_offer(row))

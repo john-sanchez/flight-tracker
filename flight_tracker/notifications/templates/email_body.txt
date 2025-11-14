@@ -1,0 +1,17 @@
+Flight Tracker Run Summary
+
+Environment : {environment}
+Routes      : {routes}
+Classes     : {travel_classes}
+Party       : {adults} adult(s), {children} child(ren)
+Departure   : {departure_date}
+Return      : {return_date}
+Currency    : {currency}
+
+Top offers:
+{offers_summary}
+
+Cheapest per route/class/stop:
+{permutation_summary}
+
+Artifacts are stored via configured backends at {timestamp} UTC (run {run_id}).
