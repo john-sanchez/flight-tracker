@@ -102,6 +102,17 @@ docker run --rm \
   flight-tracker
 ```
 
+### Automated GitHub build
+
+Tagging a release (`git tag v1.2.3 && git push --tags`) triggers the
+`.github/workflows/docker-publish.yml` pipeline, which builds the image and
+pushes it to GitHub Container Registry. Download it directly:
+
+```bash
+docker pull ghcr.io/<github-user-or-org>/flight-tracker:v1.2.3
+docker run --rm ghcr.io/<github-user-or-org>/flight-tracker:latest --help
+```
+
 ## Storage backends
 
 Flight data can be persisted through pluggable backends. The default backend is
