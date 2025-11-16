@@ -102,6 +102,10 @@ docker run --rm \
   flight-tracker
 ```
 
+The container now runs the CLI directly; pass any normal arguments after the
+image name (e.g., `docker run --rm flight-tracker --help`) if you need to tweak
+options.
+
 ### Automated GitHub build
 
 Tagging a release (`git tag v1.2.3 && git push --tags`) triggers the
