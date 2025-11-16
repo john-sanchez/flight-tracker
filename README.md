@@ -1,7 +1,7 @@
 # flight-tracker
 
 Small Python CLI that uses the Amadeus Flight Offers Search API to gather fares for
-multiple MNL-based routes and output them with the cheapest options first.
+multiple routes and output them with the cheapest options first.
 
 ## Setup
 
@@ -183,8 +183,14 @@ Top offers:
 2. USD 710.55 | Business | MNL->KIX | dep 2024-08-02 06:10
 
 Cheapest per route/class/stop:
-- MNL->TYO | economy | non-stop | flight JL746 -> USD 520.10
-- MNL->KIX | business | 1 stop | flight NH820 -> USD 710.55
+- MNL->TYO | economy | non-stop
+  Outbound: JL746 MNL->TYO
+  Return: JL745 TYO->MNL
+  Fare: USD 520.10
+- MNL->KIX | business | 1 stop
+  Outbound: NH820 MNL->HND; NH215 HND->KIX
+  Return: NH880 KIX->HND; NH819 HND->MNL
+  Fare: USD 710.55
 
 Artifacts are stored via configured backends at 2024-06-01 12:00:00 UTC (run 9af...)
 ```
@@ -214,9 +220,35 @@ Top offers:
 2. USD 710.55 | Business | MNL->KIX | dep 2024-08-02 06:10
 
 Cheapest per route/class/stop:
-- MNL->TYO | economy | non-stop | flight JL746 -> USD 520.10
-- MNL->KIX | business | 1 stop | flight NH820 -> USD 710.55
+- MNL->TYO | economy | non-stop
+  Outbound: JL746 MNL->TYO
+  Return: JL745 TYO->MNL
+  Fare: USD 520.10
+- MNL->KIX | business | 1 stop
+  Outbound: NH820 MNL->HND; NH215 HND->KIX
+  Return: NH880 KIX->HND; NH819 HND->MNL
+  Fare: USD 710.55
 ```
+
+Optional formatting overrides:
+
+```
+TELEGRAM_PARSE_MODE=MarkdownV2
+TELEGRAM_PERMUTATION_TEMPLATE=• *{route}* ({travel_class}) — {currency} {price:,.0f}
+```
+
+`TELEGRAM_PERMUTATION_TEMPLATE` lets you fully control each entry beneath the
+“Cheapest per route/class/stop” section using Python's `str.format` syntax.
+The available fields are `index`, `route`, `origin`, `destination`,
+`travel_class`, `stops`, `stop_label`, `return_stops`, `return_stop_label`,
+`flight_number`, `flight_numbers`, `outbound_flights`, `return_flights`,
+`currency`, `price`, and `has_return`. `flight_numbers` joins outbound plus
+return legs, while `outbound_flights`/`return_flights` include the airports so
+you can produce lines like `Outbound: {outbound_flights}`. `has_return` is true
+whenever Amadeus returned an inbound itinerary.
+For literal braces, escape them as `{{` and `}}`. If you want Telegram to render
+Markdown or HTML markers inside your template, set `TELEGRAM_PARSE_MODE` to one
+of Telegram's supported values (e.g., `MarkdownV2`, `Markdown`, or `HTML`).
 
 ### Custom channels
 

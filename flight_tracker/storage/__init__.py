@@ -139,6 +139,20 @@ def _serialize_offer(offer: FlightOption) -> dict:
             }
             for segment in offer.segments
         ],
+        "return_segments": [
+            {
+                "carrier_code": segment.carrier_code,
+                "number": segment.number,
+                "flight_number": segment.flight_number,
+                "aircraft_code": segment.aircraft_code,
+                "aircraft_name": segment.aircraft_name,
+                "departure_airport": segment.departure_airport,
+                "arrival_airport": segment.arrival_airport,
+                "departure_time": segment.departure_time,
+                "arrival_time": segment.arrival_time,
+            }
+            for segment in getattr(offer, "return_segments", [])
+        ],
     }
 
 

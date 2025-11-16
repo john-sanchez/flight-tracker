@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable, List
 import sys
 
@@ -37,6 +37,7 @@ class FlightOption:
     duration: str | None
     stops: int
     segments: List[FlightSegment]
+    return_segments: List[FlightSegment] = field(default_factory=list)
 
 
 def _mask_secret(value: str | None) -> str:
@@ -138,35 +139,42 @@ class AmadeusFlightClient:
         for offer in response.data:
             price = offer.get("price", {})
             itineraries = offer.get("itineraries", [])
-            raw_segments = itineraries[0]["segments"] if itineraries else []
-            segments: List[FlightSegment] = []
-            for seg in raw_segments:
-                carrier = seg.get("carrierCode", "?")
-                number = seg.get("number", "?")
-                flight_number = f"{carrier}{number}" if carrier and number else carrier or number
-                aircraft_info = seg.get("aircraft", {})
-                aircraft_code = aircraft_info.get("code")
-                aircraft_name = aircraft_info.get("name")
-                departure_info = seg.get("departure", {})
-                arrival_info = seg.get("arrival", {})
-                segments.append(
-                    FlightSegment(
-                        carrier_code=carrier,
-                        number=number,
-                        flight_number=flight_number,
-                        aircraft_code=aircraft_code,
-                        aircraft_name=aircraft_name,
-                        departure_airport=departure_info.get("iataCode", ""),
-                        arrival_airport=arrival_info.get("iataCode", ""),
-                        departure_time=departure_info.get("at", "?"),
-                        arrival_time=arrival_info.get("at", "?"),
+            outbound_segments: List[FlightSegment] = []
+            return_segments: List[FlightSegment] = []
+
+            for idx, itinerary in enumerate(itineraries):
+                parsed_segments: List[FlightSegment] = []
+                for seg in itinerary.get("segments", []):
+                    carrier = seg.get("carrierCode", "?")
+                    number = seg.get("number", "?")
+                    flight_number = f"{carrier}{number}" if carrier and number else carrier or number
+                    aircraft_info = seg.get("aircraft", {})
+                    aircraft_code = aircraft_info.get("code")
+                    aircraft_name = aircraft_info.get("name")
+                    departure_info = seg.get("departure", {})
+                    arrival_info = seg.get("arrival", {})
+                    parsed_segments.append(
+                        FlightSegment(
+                            carrier_code=carrier,
+                            number=number,
+                            flight_number=flight_number,
+                            aircraft_code=aircraft_code,
+                            aircraft_name=aircraft_name,
+                            departure_airport=departure_info.get("iataCode", ""),
+                            arrival_airport=arrival_info.get("iataCode", ""),
+                            departure_time=departure_info.get("at", "?"),
+                            arrival_time=arrival_info.get("at", "?"),
+                        )
                     )
-                )
 
-            departure = segments[0].departure_time if segments else "?"
-            arrival = segments[-1].arrival_time if segments else "?"
-            stops = max(len(segments) - 1, 0)
+                if idx == 0:
+                    outbound_segments.extend(parsed_segments)
+                else:
+                    return_segments.extend(parsed_segments)
 
+            departure = outbound_segments[0].departure_time if outbound_segments else "?"
+            arrival = outbound_segments[-1].arrival_time if outbound_segments else "?"
+            stops = max(len(outbound_segments) - 1, 0)
             offers.append(
                 FlightOption(
                     route=route,
@@ -177,7 +185,8 @@ class AmadeusFlightClient:
                     arrival=arrival,
                     duration=itineraries[0].get("duration") if itineraries else None,
                     stops=stops,
-                    segments=segments,
+                    segments=outbound_segments,
+                    return_segments=return_segments,
                 )
             )
 

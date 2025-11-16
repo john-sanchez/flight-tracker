@@ -109,10 +109,51 @@ def _lead_flight_number(offer: FlightOption) -> str:
     return "?"
 
 
-def _summarize_permutations(offers: Sequence[FlightOption]) -> str:
+def _all_flight_numbers(offer: FlightOption) -> str:
+    numbers: List[str] = []
+    for segment in offer.segments:
+        numbers.append(segment.flight_number or "?")
+    for segment in getattr(offer, "return_segments", []):
+        numbers.append(segment.flight_number or "?")
+    if not numbers:
+        return "?"
+    return ", ".join(numbers)
+
+
+def _format_segment_paths(segments: Sequence) -> str:
+    if not segments:
+        return "n/a"
+    parts = []
+    for segment in segments:
+        dep = segment.departure_airport or "?"
+        arr = segment.arrival_airport or "?"
+        parts.append(f"{segment.flight_number or '?'} {dep}->{arr}")
+    return "; ".join(parts)
+
+
+def _format_return_stop_label(segments: Sequence) -> str:
+    if not segments:
+        return "n/a"
+    stops = max(len(segments) - 1, 0)
+    return _format_stop_label(stops)
+
+
+DEFAULT_PERMUTATION_LINE_TEMPLATE = (
+    "- **{route}** | {travel_class} | {stop_label}\n"
+    "  **Outbound**: {outbound_flights}\n"
+    "  **Return**: {return_flights}\n"
+    "  **Fare**: {currency} {price:,.2f}\n"
+)
+
+
+def _summarize_permutations(
+    offers: Sequence[FlightOption],
+    line_template: str | None = None,
+) -> str:
     if not offers:
         return "No offers were returned."
 
+    template = line_template or DEFAULT_PERMUTATION_LINE_TEMPLATE
     best: dict[Tuple[str, str, str, int], FlightOption] = {}
     for offer in offers:
         key = (offer.route.origin, offer.route.destination, offer.travel_class, offer.stops)
@@ -132,14 +173,38 @@ def _summarize_permutations(offers: Sequence[FlightOption]) -> str:
         ),
     )
 
-    for key, offer in items:
+    for idx, (key, offer) in enumerate(items, 1):
         route = f"{offer.route.origin}->{offer.route.destination}"
         stop_label = _format_stop_label(offer.stops)
         flight_number = _lead_flight_number(offer)
-        lines.append(
-            f"- {route} | {offer.travel_class} | {stop_label} | flight {flight_number}"
-            f" -> {offer.currency} {offer.price:,.2f}"
-        )
+        flight_numbers = _all_flight_numbers(offer)
+        return_segments = getattr(offer, "return_segments", [])
+        outbound_flights = _format_segment_paths(offer.segments)
+        return_flights = _format_segment_paths(return_segments)
+        return_stop_label = _format_return_stop_label(return_segments)
+        return_stops = max(len(return_segments) - 1, 0) if return_segments else 0
+        context = {
+            "index": idx,
+            "route": route,
+            "origin": offer.route.origin,
+            "destination": offer.route.destination,
+            "travel_class": offer.travel_class,
+            "stops": offer.stops,
+            "stop_label": stop_label,
+            "flight_number": flight_number,
+            "flight_numbers": flight_numbers,
+            "outbound_flights": outbound_flights,
+            "return_flights": return_flights,
+            "return_stops": return_stops,
+            "return_stop_label": return_stop_label,
+            "has_return": bool(return_segments),
+            "currency": offer.currency,
+            "price": offer.price,
+        }
+        try:
+            lines.append(template.format(**context))
+        except (KeyError, ValueError) as exc:
+            raise NotificationError(f"Invalid permutation template '{template}': {exc}") from exc
     return "\n".join(lines)
 
 
@@ -252,18 +317,29 @@ class EmailNotificationChannel(NotificationChannel):
 class TelegramSettings:
     bot_token: str
     chat_ids: List[str]
+    permutation_template: str | None = None
+    parse_mode: str | None = None
 
     @classmethod
     def from_env(cls, prefix: str | None = None) -> "TelegramSettings":
         env_prefix = (prefix or "TELEGRAM").upper()
         token = os.getenv(f"{env_prefix}_BOT_TOKEN")
         chats_raw = os.getenv(f"{env_prefix}_CHAT_IDS") or os.getenv(f"{env_prefix}_CHAT_ID", "")
+        permutation_template_raw = os.getenv(f"{env_prefix}_PERMUTATION_TEMPLATE")
+        parse_mode_raw = os.getenv(f"{env_prefix}_PARSE_MODE", "")
         if not token:
             raise NotificationError(f"{env_prefix}_BOT_TOKEN must be configured for telegram notifications")
         chat_ids = [chat.strip() for chat in chats_raw.split(",") if chat.strip()]
         if not chat_ids:
             raise NotificationError(f"{env_prefix}_CHAT_IDS must list at least one chat identifier")
-        return cls(bot_token=token, chat_ids=chat_ids)
+        permutation_template = permutation_template_raw if (permutation_template_raw or "").strip() else None
+        parse_mode = parse_mode_raw.strip() or None
+        return cls(
+            bot_token=token,
+            chat_ids=chat_ids,
+            permutation_template=permutation_template,
+            parse_mode=parse_mode,
+        )
 
 
 class TelegramNotificationChannel(NotificationChannel):
@@ -279,7 +355,7 @@ class TelegramNotificationChannel(NotificationChannel):
 
     def _build_message(self, run: RunContext, offers: Sequence[FlightOption]) -> str:
         summary = _summarize_offers(offers, limit=3)
-        permutations = _summarize_permutations(offers)
+        permutations = _summarize_permutations(offers, self._settings.permutation_template)
         return TELEGRAM_MESSAGE_TEMPLATE.format(
             routes=", ".join(run.routes),
             travel_classes=", ".join(run.travel_classes),
@@ -294,11 +370,14 @@ class TelegramNotificationChannel(NotificationChannel):
         url = f"https://api.telegram.org/bot{self._settings.bot_token}/sendMessage"
         errors: List[str] = []
         for chat_id in self._settings.chat_ids:
+            payload = {"chat_id": chat_id, "text": message}
+            if self._settings.parse_mode:
+                payload["parse_mode"] = self._settings.parse_mode
             try:
                 response = requests.post(
                     url,
                     timeout=10,
-                    json={"chat_id": chat_id, "text": message},
+                    json=payload,
                 )
             except requests.RequestException as exc:  # pragma: no cover - network failures
                 errors.append(f"{chat_id}: {exc}")
