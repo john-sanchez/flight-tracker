@@ -194,8 +194,14 @@ Return      : n/a
 Currency    : USD
 
 Top offers:
-1. USD 520.10 | Economy  | MNL->TYO | dep 2024-08-01 09:25
-2. USD 710.55 | Business | MNL->KIX | dep 2024-08-02 06:10
+- MNL->TYO | Economy | USD 520.10
+  Depart: 2024-08-01 09:25 | Stops: non-stop
+  Flights: JL746 MNL->TYO
+  Return: JL745 TYO->MNL
+- MNL->KIX | Business | USD 710.55
+  Depart: 2024-08-02 06:10 | Stops: 1 stop
+  Flights: NH820 MNL->HND; NH215 HND->KIX
+  Return: NH880 KIX->HND; NH819 HND->MNL
 
 Cheapest per route/class/stop:
 - MNL->TYO | economy | non-stop
@@ -209,6 +215,17 @@ Cheapest per route/class/stop:
 
 Artifacts are stored via configured backends at 2024-06-01 12:00:00 UTC (run 9af...)
 ```
+
+To customize the “Top offers” lines, set `EMAIL_TOP_OFFERS_TEMPLATE`. It follows
+Python's `str.format` syntax and receives the fields `index`, `route`, `origin`,
+`destination`, `travel_class`, `travel_class_title`, `currency`, `price`,
+`departure`, `departure_raw`, `arrival`, `arrival_raw`, `stops`, `stop_label`,
+`duration`, `duration_raw`, `flight_number`, `flight_numbers`,
+`outbound_flights`, `return_flights`, `outbound_flights_complete`,
+`return_flights_complete`, `outbound_flights_compact`, `return_flights_compact`,
+`has_return`, `return_stops`, and `return_stop_label`.
+Use `EMAIL_TOP_OFFERS_LIMIT` (default 5) to change how many entries the
+`{offers_summary}` block renders.
 
 ### Telegram bot
 
@@ -231,8 +248,14 @@ Classes: economy, business
 Departure: 2024-08-01 (return: n/a)
 
 Top offers:
-1. USD 520.10 | Economy  | MNL->TYO | dep 2024-08-01 09:25
-2. USD 710.55 | Business | MNL->KIX | dep 2024-08-02 06:10
+- MNL->TYO | Economy | USD 520.10
+  Depart: 2024-08-01 09:25 | Stops: non-stop
+  Flights: JL746 MNL->TYO
+  Return: JL745 TYO->MNL
+- MNL->KIX | Business | USD 710.55
+  Depart: 2024-08-02 06:10 | Stops: 1 stop
+  Flights: NH820 MNL->HND; NH215 HND->KIX
+  Return: NH880 KIX->HND; NH819 HND->MNL
 
 Cheapest per route/class/stop:
 - MNL->TYO | economy | non-stop
@@ -250,6 +273,8 @@ Optional formatting overrides:
 ```
 TELEGRAM_PARSE_MODE=MarkdownV2
 TELEGRAM_PERMUTATION_TEMPLATE=• *{route}* ({travel_class}) — {currency} {price:,.0f}
+TELEGRAM_TOP_OFFERS_TEMPLATE=_{index}_ {currency} {price:,.0f} • {route}
+TELEGRAM_TOP_OFFERS_LIMIT=5
 ```
 
 `TELEGRAM_PERMUTATION_TEMPLATE` lets you fully control each entry beneath the
@@ -257,10 +282,18 @@ TELEGRAM_PERMUTATION_TEMPLATE=• *{route}* ({travel_class}) — {currency} {pri
 The available fields are `index`, `route`, `origin`, `destination`,
 `travel_class`, `stops`, `stop_label`, `return_stops`, `return_stop_label`,
 `flight_number`, `flight_numbers`, `outbound_flights`, `return_flights`,
-`currency`, `price`, and `has_return`. `flight_numbers` joins outbound plus
-return legs, while `outbound_flights`/`return_flights` include the airports so
-you can produce lines like `Outbound: {outbound_flights}`. `has_return` is true
-whenever Amadeus returned an inbound itinerary.
+`outbound_flights_complete`, `return_flights_complete`, `outbound_flights_compact`,
+`return_flights_compact`, `currency`, `price`, and `has_return`. `flight_numbers`
+joins outbound plus return legs, while `outbound_flights`/`return_flights` include
+the airports so you can produce lines like `Outbound: {outbound_flights}`. The
+`*_complete` variants expand each leg with detailed blocks, whereas the new
+`*_compact` placeholders collapse each segment into a single line (matching the
+spacing shown above) while preserving layover rows. `has_return` is true whenever
+Amadeus returned an inbound itinerary.
+`TELEGRAM_TOP_OFFERS_TEMPLATE` mirrors `EMAIL_TOP_OFFERS_TEMPLATE` (see above for
+its placeholder list) and overrides the default “Top offers” lines, which now
+mirror the multi-line summary style shown in the examples. Control how many rows
+feed `{offers_summary}` via `TELEGRAM_TOP_OFFERS_LIMIT` (default 3).
 For literal braces, escape them as `{{` and `}}`. If you want Telegram to render
 Markdown or HTML markers inside your template, set `TELEGRAM_PARSE_MODE` to one
 of Telegram's supported values (e.g., `MarkdownV2`, `Markdown`, or `HTML`).

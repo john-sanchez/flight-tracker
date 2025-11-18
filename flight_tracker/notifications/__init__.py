@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
 import smtplib
 from dataclasses import dataclass
+from datetime import datetime
 from email.message import EmailMessage
 from importlib import resources
 from typing import Iterable, List, Sequence, Tuple
@@ -80,19 +82,79 @@ def _format_timestamp(value) -> str:
     return value.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
-def _summarize_offers(offers: Sequence[FlightOption], limit: int = 5) -> str:
+_ISO_Z_REPLACEMENT = re.compile("Z$")
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    if not value or value == "?":
+        return None
+    iso_value = _ISO_Z_REPLACEMENT.sub("+00:00", value)
+    try:
+        return datetime.fromisoformat(iso_value)
+    except ValueError:
+        return None
+
+
+DEFAULT_TOP_OFFER_LINE_TEMPLATE = (
+    "- **{route}** | {travel_class_title} | {currency} {price:,.2f}\n"
+    "  **Depart**: {departure} | **Stops**: {stop_label}\n"
+    "  **Flights**: {outbound_flights}\n"
+    "  **Return**: {return_flights}\n"
+)
+
+
+def _build_top_offer_context(offer: FlightOption, index: int) -> dict[str, object]:
+    return_segments = getattr(offer, "return_segments", [])
+    outbound_flights = _format_segment_paths(offer.segments)
+    return_flights = _format_segment_paths(return_segments)
+    return {
+        "index": index,
+        "origin": offer.route.origin,
+        "destination": offer.route.destination,
+        "route": f"{offer.route.origin}->{offer.route.destination}",
+        "travel_class": offer.travel_class,
+        "travel_class_title": offer.travel_class.title(),
+        "currency": offer.currency,
+        "price": offer.price,
+        "departure": _format_datetime(offer.departure),
+        "departure_raw": offer.departure,
+        "arrival": _format_datetime(offer.arrival),
+        "arrival_raw": offer.arrival,
+        "stops": offer.stops,
+        "stop_label": _format_stop_label(offer.stops),
+        "duration": offer.duration or "n/a",
+        "duration_raw": offer.duration,
+        "flight_number": _lead_flight_number(offer),
+        "flight_numbers": _all_flight_numbers(offer),
+        "outbound_flights": outbound_flights,
+        "return_flights": return_flights,
+        "has_return": bool(return_segments),
+        "return_stops": max(len(return_segments) - 1, 0) if return_segments else 0,
+        "return_stop_label": _format_return_stop_label(return_segments),
+        "outbound_flights_complete": _format_complete_flight(offer.segments, "Departing Flight"),
+        "return_flights_complete": _format_complete_flight(return_segments, "Returning Flight"),
+        "outbound_flights_compact": _format_compact_flight(offer.segments, "Departing Flight"),
+        "return_flights_compact": _format_compact_flight(return_segments, "Returning Flight"),
+    }
+
+
+def _summarize_offers(
+    offers: Sequence[FlightOption],
+    limit: int = 5,
+    line_template: str | None = None,
+) -> str:
     top = list(offers[:limit])
     if not top:
         return "No offers were returned."
 
+    template = line_template or DEFAULT_TOP_OFFER_LINE_TEMPLATE
     lines = []
     for idx, offer in enumerate(top, 1):
-        lines.append(
-            (
-                f"{idx}. {offer.currency} {offer.price:,.2f} | {offer.travel_class.title():8s} | "
-                f"{offer.route.origin}->{offer.route.destination} | dep {_format_datetime(offer.departure)}"
-            )
-        )
+        context = _build_top_offer_context(offer, idx)
+        try:
+            lines.append(template.format(**context))
+        except (KeyError, ValueError) as exc:
+            raise NotificationError(f"Invalid top-offer template '{template}': {exc}") from exc
     return "\n".join(lines)
 
 
@@ -136,6 +198,122 @@ def _format_return_stop_label(segments: Sequence) -> str:
         return "n/a"
     stops = max(len(segments) - 1, 0)
     return _format_stop_label(stops)
+
+
+def _format_minutes_label(minutes: int | None) -> str:
+    if minutes is None:
+        return "unknown"
+    hours, mins = divmod(minutes, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}h")
+    if mins or not parts:
+        parts.append(f"{mins}m")
+    return " ".join(parts)
+
+
+def _minutes_between(start: str | None, end: str | None) -> int | None:
+    start_dt = _parse_datetime(start)
+    end_dt = _parse_datetime(end)
+    if not start_dt or not end_dt:
+        return None
+    delta = int((end_dt - start_dt).total_seconds() // 60)
+    if delta < 0:
+        return None
+    return delta
+
+
+def _format_date_no_year(value: str | None) -> str:
+    parsed = _parse_datetime(value)
+    if not parsed:
+        return "n/a"
+    return parsed.strftime("%d %b")
+
+
+def _format_time_with_reference(value: str | None, reference: str | None) -> str:
+    parsed = _parse_datetime(value)
+    if not parsed:
+        return value or "n/a"
+    label = parsed.strftime("%H:%M")
+    if reference:
+        ref_dt = _parse_datetime(reference)
+        if ref_dt:
+            delta_days = (parsed.date() - ref_dt.date()).days
+            if delta_days > 0:
+                label += f" (+{delta_days})"
+    return label
+
+
+def _segment_duration_minutes(segment: FlightSegment) -> int | None:
+    return _minutes_between(segment.departure_time, segment.arrival_time)
+
+
+def _format_complete_flight(
+    segments: Sequence[FlightSegment],
+    heading_label: str,
+) -> str:
+    if not segments:
+        return f"    {heading_label} - n/a"
+
+    lines: List[str] = []
+    first = segments[0]
+    heading = f"    {heading_label} - {first.flight_number or '?'} {_format_date_no_year(first.departure_time)}"
+    lines.append(heading)
+    base_reference = first.departure_time
+
+    for idx, segment in enumerate(segments):
+        if idx > 0:
+            lines.append(f"    {segment.flight_number or '?'}")
+        depart_label = _format_time_with_reference(segment.departure_time, base_reference)
+        depart_airport = segment.departure_airport or "?"
+        lines.append(f"      {depart_label} {depart_airport}")
+        duration_label = _format_minutes_label(_segment_duration_minutes(segment))
+        lines.append(f"      Travel time: {duration_label}")
+        arrival_label = _format_time_with_reference(segment.arrival_time, base_reference)
+        arrival_airport = segment.arrival_airport or "?"
+        lines.append(f"      {arrival_label} {arrival_airport}")
+        if idx < len(segments) - 1:
+            layover_label = _format_minutes_label(
+                _minutes_between(segment.arrival_time, segments[idx + 1].departure_time)
+            )
+            lines.append(f"    {layover_label} layover")
+
+    return "\n".join(lines)
+
+
+def _format_compact_flight(
+    segments: Sequence[FlightSegment],
+    heading_label: str,
+) -> str:
+    if not segments:
+        return f"    {heading_label} n/a"
+
+    lines: List[str] = []
+    first = segments[0]
+    date_label = _format_date_no_year(first.departure_time)
+    lines.append(f"    {heading_label} {date_label}")
+    base_reference = first.departure_time
+
+    for idx, segment in enumerate(segments):
+        depart_label = _format_time_with_reference(segment.departure_time, base_reference)
+        arrival_label = _format_time_with_reference(segment.arrival_time, base_reference)
+        depart_airport = segment.departure_airport or "?"
+        arrival_airport = segment.arrival_airport or "?"
+        duration_label = _format_minutes_label(_segment_duration_minutes(segment))
+        flight_number = segment.flight_number or "?"
+        lines.append(
+            (
+                f"      {depart_label} {depart_airport} - {arrival_label} {arrival_airport}"
+                f" ({duration_label}) | {flight_number}"
+            )
+        )
+        if idx < len(segments) - 1:
+            layover_label = _format_minutes_label(
+                _minutes_between(segment.arrival_time, segments[idx + 1].departure_time)
+            )
+            lines.append(f"      {layover_label} layover")
+
+    return "\n".join(lines)
 
 
 DEFAULT_PERMUTATION_LINE_TEMPLATE = (
@@ -200,6 +378,10 @@ def _summarize_permutations(
             "has_return": bool(return_segments),
             "currency": offer.currency,
             "price": offer.price,
+            "outbound_flights_complete": _format_complete_flight(offer.segments, "Departing Flight"),
+            "return_flights_complete": _format_complete_flight(return_segments, "Returning Flight"),
+            "outbound_flights_compact": _format_compact_flight(offer.segments, "Departing Flight"),
+            "return_flights_compact": _format_compact_flight(return_segments, "Returning Flight"),
         }
         try:
             lines.append(template.format(**context))
@@ -218,6 +400,8 @@ class EmailSettings:
     password: str | None
     use_tls: bool
     subject_prefix: str | None = None
+    top_offers_template: str | None = None
+    top_offers_limit: int = 5
 
     @classmethod
     def from_env(cls, prefix: str | None = None) -> "EmailSettings":
@@ -230,6 +414,8 @@ class EmailSettings:
         password = os.getenv(f"{env_prefix}_PASSWORD")
         use_tls_value = os.getenv(f"{env_prefix}_USE_TLS", "true")
         subject_prefix = os.getenv(f"{env_prefix}_SUBJECT_PREFIX")
+        top_offers_template_raw = os.getenv(f"{env_prefix}_TOP_OFFERS_TEMPLATE", "")
+        top_offers_limit_raw = os.getenv(f"{env_prefix}_TOP_OFFERS_LIMIT", "").strip()
 
         if not host or not sender or not recipients_raw.strip():
             raise NotificationError(
@@ -246,6 +432,15 @@ class EmailSettings:
             raise NotificationError(f"{env_prefix}_TO must list at least one recipient email address")
 
         use_tls = use_tls_value.strip().lower() not in {"false", "0", "no"}
+        top_offers_template = top_offers_template_raw.strip() or None
+        top_offers_limit = 5
+        if top_offers_limit_raw:
+            try:
+                top_offers_limit = int(top_offers_limit_raw)
+            except ValueError as exc:  # pragma: no cover - defensive
+                raise NotificationError(f"{env_prefix}_TOP_OFFERS_LIMIT must be an integer") from exc
+            if top_offers_limit <= 0:
+                raise NotificationError(f"{env_prefix}_TOP_OFFERS_LIMIT must be greater than zero")
 
         return cls(
             host=host,
@@ -256,6 +451,8 @@ class EmailSettings:
             password=password,
             use_tls=use_tls,
             subject_prefix=subject_prefix,
+            top_offers_template=top_offers_template,
+            top_offers_limit=top_offers_limit,
         )
 
 
@@ -278,7 +475,11 @@ class EmailNotificationChannel(NotificationChannel):
         return subject
 
     def _build_body(self, run: RunContext, offers: Sequence[FlightOption]) -> str:
-        summary = _summarize_offers(offers)
+        summary = _summarize_offers(
+            offers,
+            limit=self._settings.top_offers_limit,
+            line_template=self._settings.top_offers_template,
+        )
         permutations = _summarize_permutations(offers)
         return EMAIL_BODY_TEMPLATE.format(
             environment=run.environment,
@@ -318,6 +519,8 @@ class TelegramSettings:
     bot_token: str
     chat_ids: List[str]
     permutation_template: str | None = None
+    top_offers_template: str | None = None
+    top_offers_limit: int = 3
     parse_mode: str | None = None
 
     @classmethod
@@ -326,6 +529,8 @@ class TelegramSettings:
         token = os.getenv(f"{env_prefix}_BOT_TOKEN")
         chats_raw = os.getenv(f"{env_prefix}_CHAT_IDS") or os.getenv(f"{env_prefix}_CHAT_ID", "")
         permutation_template_raw = os.getenv(f"{env_prefix}_PERMUTATION_TEMPLATE")
+        top_offers_template_raw = os.getenv(f"{env_prefix}_TOP_OFFERS_TEMPLATE", "")
+        top_offers_limit_raw = os.getenv(f"{env_prefix}_TOP_OFFERS_LIMIT", "").strip()
         parse_mode_raw = os.getenv(f"{env_prefix}_PARSE_MODE", "")
         if not token:
             raise NotificationError(f"{env_prefix}_BOT_TOKEN must be configured for telegram notifications")
@@ -333,11 +538,22 @@ class TelegramSettings:
         if not chat_ids:
             raise NotificationError(f"{env_prefix}_CHAT_IDS must list at least one chat identifier")
         permutation_template = permutation_template_raw if (permutation_template_raw or "").strip() else None
+        top_offers_template = top_offers_template_raw.strip() or None
+        top_offers_limit = 3
+        if top_offers_limit_raw:
+            try:
+                top_offers_limit = int(top_offers_limit_raw)
+            except ValueError as exc:
+                raise NotificationError(f"{env_prefix}_TOP_OFFERS_LIMIT must be an integer") from exc
+            if top_offers_limit <= 0:
+                raise NotificationError(f"{env_prefix}_TOP_OFFERS_LIMIT must be greater than zero")
         parse_mode = parse_mode_raw.strip() or None
         return cls(
             bot_token=token,
             chat_ids=chat_ids,
             permutation_template=permutation_template,
+            top_offers_template=top_offers_template,
+            top_offers_limit=top_offers_limit,
             parse_mode=parse_mode,
         )
 
@@ -354,7 +570,11 @@ class TelegramNotificationChannel(NotificationChannel):
         return cls(settings)
 
     def _build_message(self, run: RunContext, offers: Sequence[FlightOption]) -> str:
-        summary = _summarize_offers(offers, limit=3)
+        summary = _summarize_offers(
+            offers,
+            limit=self._settings.top_offers_limit,
+            line_template=self._settings.top_offers_template,
+        )
         permutations = _summarize_permutations(offers, self._settings.permutation_template)
         return TELEGRAM_MESSAGE_TEMPLATE.format(
             routes=", ".join(run.routes),
